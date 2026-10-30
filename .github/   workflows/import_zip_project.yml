@@ -1,0 +1,74 @@
+name: Import ZIP Project into Repository
+
+on:
+  workflow_dispatch:
+    inputs:
+      zip_file:
+        description: "اسم ملف ZIP المرفوع في جذر المستودع"
+        required: true
+        default: "incoming-project.zip"
+      commit_message:
+        description: "رسالة الحفظ"
+        required: true
+        default: "Import updated project from ZIP"
+
+permissions:
+  contents: write
+
+jobs:
+  import-zip:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Prepare and extract ZIP
+        env:
+          ZIP_FILE: ${{ inputs.zip_file }}
+        run: |
+          set -euo pipefail
+          if [ ! -f "$ZIP_FILE" ]; then
+            echo "::error::ZIP file not found in repository root: $ZIP_FILE"
+            exit 1
+          fi
+
+          mkdir -p "$RUNNER_TEMP/project-unzip"
+          unzip -q "$ZIP_FILE" -d "$RUNNER_TEMP/project-unzip"
+
+          SOURCE="$RUNNER_TEMP/project-unzip"
+          if [ ! -f "$SOURCE/pubspec.yaml" ]; then
+            PUBSPEC="$(find "$SOURCE" -mindepth 2 -maxdepth 4 -type f -name pubspec.yaml -print -quit)"
+            if [ -n "$PUBSPEC" ]; then
+              SOURCE="$(dirname "$PUBSPEC")"
+            else
+              echo "::error::Could not find pubspec.yaml. ZIP must contain the Flutter project."
+              exit 1
+            fi
+          fi
+          echo "PROJECT_SOURCE=$SOURCE" >> "$GITHUB_ENV"
+
+      - name: Replace project files and preserve GitHub workflows
+        run: |
+          set -euo pipefail
+          rsync -a --delete \
+            --exclude='/.git/' \
+            --exclude='/.github/workflows/' \
+            "$PROJECT_SOURCE/" ./
+          rm -f "${{ inputs.zip_file }}"
+
+      - name: Commit and push changes
+        env:
+          COMMIT_MESSAGE: ${{ inputs.commit_message }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "$COMMIT_MESSAGE"
+            git push
+          fi
