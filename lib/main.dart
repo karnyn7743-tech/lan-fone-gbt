@@ -1,3 +1,4 @@
+
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -5,7 +6,6 @@ import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:provider/provider.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import 'core/constants.dart';
 import 'core/discovery/device_discovery.dart';
@@ -15,7 +15,6 @@ import 'core/providers/theme_provider.dart';
 import 'core/rtc/rtc_service.dart';
 import 'core/services/activation_service.dart';
 import 'core/services/app_lifecycle_service.dart';
-import 'core/services/background_service.dart';
 import 'core/services/broadcast_service.dart';
 import 'core/services/local_notification_service.dart';
 import 'core/services/lock_service.dart';
@@ -29,7 +28,6 @@ import 'ui/screens/audio_call_screen.dart';
 import 'ui/screens/broadcast_screen.dart';
 import 'ui/screens/chat_screen.dart';
 import 'ui/screens/lock_screen.dart';
-import 'ui/screens/permission_setup_screen.dart';
 import 'ui/screens/splash_screen.dart';
 import 'ui/screens/video_call_screen.dart';
 import 'ui/theme/app_theme.dart';
@@ -285,18 +283,6 @@ class _AppRootState extends State<_AppRoot> {
       debugPrint('[startup] Signaling service started.');
     } catch (e, stack) {
       debugPrint('[startup] Signaling service error: $e');
-      debugPrint('$stack');
-    }
-
-    if (!mounted) return;
-
-    // المرحلة الرابعة: تشغيل خدمة الخلفية.
-    try {
-      await BackgroundServiceManager.instance.start();
-
-      debugPrint('[startup] Background service started.');
-    } catch (e, stack) {
-      debugPrint('[startup] Background service error: $e');
       debugPrint('$stack');
     }
 
