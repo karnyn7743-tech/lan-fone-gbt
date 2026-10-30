@@ -1,10 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-
 import '../../core/constants.dart';
 import '../../core/discovery/device_discovery.dart';
 import '../../core/services/broadcast_service.dart';
-import '../../core/services/permission_service.dart';
 import '../theme/app_theme.dart';
 import 'broadcast_screen.dart';
 import 'dialer_screen.dart';
@@ -29,16 +27,11 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen>
     with SingleTickerProviderStateMixin {
   late TabController _tabController;
-  bool _permissionsChecked = false;
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 3, vsync: this);
-
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
-      await _ensureDiscoveryPermissions();
-    });
   }
 
   @override
@@ -48,34 +41,7 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   // ============================================
-  // === الأذونات ===
-  // ============================================
-
-  Future<void> _ensureDiscoveryPermissions() async {
-    if (_permissionsChecked) return;
-    _permissionsChecked = true;
-
-    final ok = await PermissionService.requestDiscovery();
-    if (!ok && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text(
-            'بدون إذن الموقع والواي فاي، لن يعمل اكتشاف الأجهزة',
-          ),
-          backgroundColor: AppTheme.errorColor,
-          duration: const Duration(seconds: 5),
-          action: SnackBarAction(
-            label: 'الإعدادات',
-            textColor: Colors.white,
-            onPressed: () => PermissionService.openAppSettings(),
-          ),
-        ),
-      );
-    }
-  }
-
-  // ============================================
-  // === البث الصوتي (جديد) ===
+  // === البث الصوتي ===
   // ============================================
 
   void _openBroadcast() {
@@ -382,14 +348,11 @@ class _HomeScreenState extends State<HomeScreen>
           ],
         ),
         actions: [
-          // البحث
           IconButton(
             icon: const Icon(Icons.search),
             tooltip: 'البحث',
             onPressed: _openGlobalSearch,
           ),
-
-          // ✅ البث الصوتي (مع شارة حمراء إذا كان نشطًا)
           Stack(
             children: [
               IconButton(
@@ -427,8 +390,6 @@ class _HomeScreenState extends State<HomeScreen>
                 ),
             ],
           ),
-
-          // قائمة إضافية
           IconButton(
             icon: const Icon(Icons.more_vert),
             tooltip: 'المزيد',
