@@ -1,3 +1,4 @@
+
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -29,13 +30,14 @@ import 'ui/screens/audio_call_screen.dart';
 import 'ui/screens/broadcast_screen.dart';
 import 'ui/screens/chat_screen.dart';
 import 'ui/screens/lock_screen.dart';
-import 'ui/screens/permission_setup_screen.dart'; // لا يزال مستورداً لكنه معطل
+import 'ui/screens/permission_setup_screen.dart';
 import 'ui/screens/splash_screen.dart';
 import 'ui/screens/video_call_screen.dart';
 import 'ui/theme/app_theme.dart';
 import 'ui/widgets/incoming_broadcast_dialog.dart';
 
-final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
+final GlobalKey<NavigatorState> navigatorKey =
+    GlobalKey<NavigatorState>();
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -46,27 +48,30 @@ Future<void> main() async {
 
   try {
     await WebRTC.initialize();
-    debugPrint('[main] ✅ WebRTC initialized');
-  } catch (e) {
-    debugPrint('[main] WebRTC init error: $e');
+    debugPrint('[main] WebRTC initialized');
+  } catch (e, stack) {
+    debugPrint('[main] WebRTC initialization error: $e');
+    debugPrint('$stack');
   }
 
   try {
     await DatabaseHelper.instance.init();
-  } catch (e) {
-    debugPrint('[main] Database init error: $e');
+    debugPrint('[main] Database initialized');
+  } catch (e, stack) {
+    debugPrint('[main] Database initialization error: $e');
+    debugPrint('$stack');
   }
 
   try {
     await LocalNotificationService.instance.init();
     debugPrint('[main] Local notifications initialized');
-  } catch (e) {
-    debugPrint('[main] Local notifications init error: $e');
+  } catch (e, stack) {
+    debugPrint('[main] Local notifications initialization error: $e');
+    debugPrint('$stack');
   }
 
-  // Show the Flutter UI before requesting runtime permissions. Android
-  // permission dialogs must be launched from a visible/resumed Activity.
-  // Startup permission and service initialization now run after first frame.
+  // عرض واجهة التطبيق أولاً.
+  // لن يتم تشغيل خدمات الشبكة قبل التأكد من التنشيط.
   runApp(const LanPhoneApp());
 }
 
@@ -80,58 +85,88 @@ class LanPhoneApp extends StatelessWidget {
         ChangeNotifierProvider<ThemeProvider>(
           create: (_) => ThemeProvider(),
         ),
+
         ChangeNotifierProvider<RingtoneService>(
           create: (_) => RingtoneService()..load(),
         ),
+
         ChangeNotifierProvider<AppLifecycleService>(
           create: (_) => AppLifecycleService(),
         ),
+
         ChangeNotifierProvider<LockService>(
           create: (_) => LockService(),
         ),
+
         ChangeNotifierProvider<ActivationService>(
           create: (_) => ActivationService(),
         ),
+
         ChangeNotifierProvider<NotificationService>(
           create: (_) => NotificationService(),
         ),
+
         ChangeNotifierProvider<DeviceDiscovery>(
           create: (_) => DeviceDiscovery(),
         ),
+
+        // إنشاء خدمة الإشارات دون تشغيل الخادم تلقائياً.
+        // سيتم تشغيلها بعد نجاح التنشيط.
         ChangeNotifierProxyProvider<DeviceDiscovery, SignalingService>(
-          create: (_) => SignalingService()..start(),
+          create: (_) => SignalingService(),
           update: (_, discovery, signaling) {
-            final service = signaling ?? SignalingService()..start();
+            final service = signaling ?? SignalingService();
+
             service.attachDiscovery(discovery);
+
             return service;
           },
         ),
-        ChangeNotifierProxyProvider2<SignalingService, NotificationService, RtcService>(
+
+        ChangeNotifierProxyProvider2<
+            SignalingService,
+            NotificationService,
+            RtcService>(
           create: (_) => RtcService(),
           update: (_, signaling, notification, rtc) {
             final service = rtc ?? RtcService();
+
             service.attachSignaling(signaling);
             service.attachNotification(notification);
+
             return service;
           },
         ),
-        ChangeNotifierProxyProvider2<SignalingService, DeviceDiscovery, BroadcastService>(
+
+        ChangeNotifierProxyProvider2<
+            SignalingService,
+            DeviceDiscovery,
+            BroadcastService>(
           create: (_) => BroadcastService(),
           update: (_, signaling, discovery, broadcast) {
             final service = broadcast ?? BroadcastService();
+
             service.attach(
               signaling: signaling,
               discovery: discovery,
             );
+
             return service;
           },
         ),
-        ChangeNotifierProxyProvider3<DeviceDiscovery, SignalingService, AppLifecycleService, MessageService>(
+
+        ChangeNotifierProxyProvider3<
+            DeviceDiscovery,
+            SignalingService,
+            AppLifecycleService,
+            MessageService>(
           create: (_) => MessageService(),
           update: (_, discovery, signaling, lifecycle, messages) {
             final service = messages ?? MessageService();
+
             service.attach(discovery, signaling);
             service.attachLifecycle(lifecycle);
+
             return service;
           },
         ),
@@ -152,6 +187,8 @@ class _AppRootState extends State<_AppRoot> {
   StreamSubscription<RtcEvent>? _rtcSub;
   StreamSubscription<BroadcastEvent>? _broadcastSub;
 
+  ActivationService? _activationService;
+
   RtcService? _rtc;
   BroadcastService? _broadcastService;
   DeviceDiscovery? _discovery;
@@ -160,77 +197,160 @@ class _AppRootState extends State<_AppRoot> {
   bool _broadcastDialogOpen = false;
   bool _broadcastScreenOpen = false;
 
+  // يمنع تشغيل خدمات الاتصال أكثر من مرة.
+  bool _startupStarted = false;
+
   @override
   void initState() {
     super.initState();
+
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+
       _setupListeners();
       _setupNotificationTapHandler();
       _setupBroadcastListener();
-      _initializeStartupServices();
+
+      // متابعة حالة التنشيط.
+      _activationService = context.read<ActivationService>();
+
+      _activationService!.addListener(
+        _onActivationChanged,
+      );
+
+      // فحص حالة التنشيط الحالية.
+      _onActivationChanged();
     });
   }
 
+  // لا تبدأ خدمات الاتصال إلا بعد نجاح التنشيط.
+  void _onActivationChanged() {
+    if (!mounted || _startupStarted) return;
+
+    final activation = _activationService;
+
+    if (activation == null) return;
+
+    if (activation.checking) {
+      debugPrint('[startup] Waiting for activation check...');
+      return;
+    }
+
+    if (!activation.activated) {
+      debugPrint('[startup] Application is not activated.');
+      return;
+    }
+
+    debugPrint('[startup] Activation verified.');
+
+    // منع التكرار قبل بدء العمليات غير المتزامنة.
+    _startupStarted = true;
+
+    _initializeStartupServices();
+  }
+
+  // تشغيل الخدمات بالترتيب بعد نجاح التنشيط.
   Future<void> _initializeStartupServices() async {
-    // The app is now rendered and its Activity is resumed, so Android can
-    // safely display runtime permission dialogs.
+    debugPrint('[startup] Starting application services...');
+
+    // المرحلة الأولى: طلب الأذونات.
     try {
       await PermissionService.requestEssentialAtStartup();
-    } catch (e) {
+
+      debugPrint('[startup] Permission request completed.');
+    } catch (e, stack) {
       debugPrint('[startup] Permission request error: $e');
+      debugPrint('$stack');
     }
 
     if (!mounted) return;
 
-    // Start LAN discovery only after the permission flow has completed.
+    // المرحلة الثانية: تشغيل اكتشاف الأجهزة.
     try {
-      await context.read<DeviceDiscovery>().start();
-    } catch (e) {
-      debugPrint('[startup] Device discovery start error: $e');
+      _discovery = context.read<DeviceDiscovery>();
+
+      await _discovery!.start();
+
+      debugPrint('[startup] Device discovery started.');
+    } catch (e, stack) {
+      debugPrint('[startup] Device discovery error: $e');
+      debugPrint('$stack');
     }
 
     if (!mounted) return;
 
-    // Start the persistent notification/service after the visible UI exists.
+    // المرحلة الثالثة: تشغيل خدمة الإشارات.
+    try {
+      await context.read<SignalingService>().start();
+
+      debugPrint('[startup] Signaling service started.');
+    } catch (e, stack) {
+      debugPrint('[startup] Signaling service error: $e');
+      debugPrint('$stack');
+    }
+
+    if (!mounted) return;
+
+    // المرحلة الرابعة: تشغيل خدمة الخلفية.
     try {
       await BackgroundServiceManager.instance.start();
-      debugPrint('[startup] Background service start requested');
-    } catch (e) {
+
+      debugPrint('[startup] Background service started.');
+    } catch (e, stack) {
       debugPrint('[startup] Background service error: $e');
+      debugPrint('$stack');
     }
+
+    debugPrint('[startup] Startup sequence finished.');
   }
 
   @override
   void dispose() {
     _rtcSub?.cancel();
     _broadcastSub?.cancel();
+
+    _activationService?.removeListener(
+      _onActivationChanged,
+    );
+
     super.dispose();
   }
 
   void _setupListeners() {
     if (!mounted) return;
+
     _rtc = context.read<RtcService>();
     _discovery = context.read<DeviceDiscovery>();
+
     _rtcSub = _rtc!.events.listen(_onRtcEvent);
   }
 
   void _setupNotificationTapHandler() {
-    LocalNotificationService.instance.onMessageTap = (peerDeviceId, messageId) {
+    LocalNotificationService.instance.onMessageTap =
+        (peerDeviceId, messageId) {
       _openChatFromNotification(peerDeviceId, messageId);
     };
   }
 
   void _setupBroadcastListener() {
     if (!mounted) return;
+
     _broadcastService = context.read<BroadcastService>();
-    _broadcastSub = _broadcastService!.events.listen(_onBroadcastEvent);
+
+    _broadcastSub =
+        _broadcastService!.events.listen(_onBroadcastEvent);
   }
 
-  void _openChatFromNotification(String peerDeviceId, String? messageId) {
+  void _openChatFromNotification(
+    String peerDeviceId,
+    String? messageId,
+  ) {
     final nav = navigatorKey.currentState;
+
     if (nav == null) return;
 
     final peer = _discovery?.getDevice(peerDeviceId);
+
     if (peer == null) return;
 
     nav.pushAndRemoveUntil(
@@ -249,20 +369,25 @@ class _AppRootState extends State<_AppRoot> {
       case RtcEventType.incomingCall:
         _openCallScreen(event);
         break;
+
       case RtcEventType.callAccepted:
         if (!_callScreenOpen) {
           _openCallScreen(event);
         }
         break;
+
       case RtcEventType.callEnded:
         if (_callScreenOpen) {
           final nav = navigatorKey.currentState;
+
           if (nav != null && nav.canPop()) {
             nav.pop();
           }
         }
+
         _callScreenOpen = false;
         break;
+
       default:
         break;
     }
@@ -272,16 +397,21 @@ class _AppRootState extends State<_AppRoot> {
     if (_callScreenOpen) return;
 
     final nav = navigatorKey.currentState;
+
     if (nav == null) return;
 
-    final discovered = _discovery?.getDevice(event.peerDeviceId);
+    final discovered =
+        _discovery?.getDevice(event.peerDeviceId);
+
     final peer = discovered ??
         DiscoveredDevice(
           deviceId: event.peerDeviceId,
           number: '',
           name: _rtc?.peerName.isNotEmpty == true
               ? _rtc!.peerName
-              : (event.peerName.isNotEmpty ? event.peerName : 'جهاز محلي'),
+              : (event.peerName.isNotEmpty
+                  ? event.peerName
+                  : 'جهاز محلي'),
           ip: '',
           port: 0,
           capabilities: const ['voice', 'video'],
@@ -293,11 +423,22 @@ class _AppRootState extends State<_AppRoot> {
 
     final bool isCaller = _rtc?.isCaller ?? false;
 
-    final Widget screen = event.callType == AppConstants.callTypeVideo
-        ? VideoCallScreen(peer: peer, isCaller: isCaller)
-        : AudioCallScreen(peer: peer, isCaller: isCaller);
+    final Widget screen =
+        event.callType == AppConstants.callTypeVideo
+            ? VideoCallScreen(
+                peer: peer,
+                isCaller: isCaller,
+              )
+            : AudioCallScreen(
+                peer: peer,
+                isCaller: isCaller,
+              );
 
-    nav.push(MaterialPageRoute(builder: (_) => screen)).then((_) {
+    nav.push(
+      MaterialPageRoute(
+        builder: (_) => screen,
+      ),
+    ).then((_) {
       _callScreenOpen = false;
     });
   }
@@ -307,12 +448,15 @@ class _AppRootState extends State<_AppRoot> {
       case BroadcastEventType.invitation:
         _showBroadcastInvitation(event);
         break;
+
       case BroadcastEventType.ended:
         _handleBroadcastEnded(event);
         break;
+
       case BroadcastEventType.disconnected:
         _handleBroadcastDisconnected(event);
         break;
+
       case BroadcastEventType.audioReceived:
         break;
     }
@@ -320,18 +464,28 @@ class _AppRootState extends State<_AppRoot> {
 
   void _showBroadcastInvitation(BroadcastEvent event) {
     final lockService = context.read<LockService>();
+
     if (lockService.isLocked) {
-      _broadcastService?.rejectBroadcast(event.broadcastId, event.peerDeviceId);
+      _broadcastService?.rejectBroadcast(
+        event.broadcastId,
+        event.peerDeviceId,
+      );
       return;
     }
 
-    if (_broadcastDialogOpen || _callScreenOpen || _broadcastScreenOpen) {
-      _broadcastService?.rejectBroadcast(event.broadcastId, event.peerDeviceId);
+    if (_broadcastDialogOpen ||
+        _callScreenOpen ||
+        _broadcastScreenOpen) {
+      _broadcastService?.rejectBroadcast(
+        event.broadcastId,
+        event.peerDeviceId,
+      );
       return;
     }
 
     final nav = navigatorKey.currentState;
-    if (nav == null) return;
+
+    if (nav == null || nav.overlay == null) return;
 
     _broadcastDialogOpen = true;
 
@@ -342,10 +496,14 @@ class _AppRootState extends State<_AppRoot> {
         event: event,
         onResult: (accept) {
           _broadcastDialogOpen = false;
+
           if (accept) {
             _acceptBroadcast(event);
           } else {
-            _broadcastService?.rejectBroadcast(event.broadcastId, event.peerDeviceId);
+            _broadcastService?.rejectBroadcast(
+              event.broadcastId,
+              event.peerDeviceId,
+            );
           }
         },
       ),
@@ -356,9 +514,14 @@ class _AppRootState extends State<_AppRoot> {
 
   Future<void> _acceptBroadcast(BroadcastEvent event) async {
     final nav = navigatorKey.currentState;
+
     if (nav == null) return;
 
-    final ok = await _broadcastService!.acceptBroadcast(
+    final service = _broadcastService;
+
+    if (service == null) return;
+
+    final ok = await service.acceptBroadcast(
       broadcastId: event.broadcastId,
       broadcasterDeviceId: event.peerDeviceId,
       broadcasterName: event.peerName,
@@ -375,6 +538,7 @@ class _AppRootState extends State<_AppRoot> {
           ),
         );
       }
+
       return;
     }
 
@@ -385,6 +549,7 @@ class _AppRootState extends State<_AppRoot> {
     if (_broadcastService?.isBroadcasting ?? false) return;
 
     final nav = navigatorKey.currentState;
+
     if (nav == null) return;
 
     if (_broadcastScreenOpen) {
@@ -406,6 +571,7 @@ class _AppRootState extends State<_AppRoot> {
     if (!(_broadcastService?.isListening ?? false)) return;
 
     final nav = navigatorKey.currentState;
+
     if (nav == null) return;
 
     if (_broadcastScreenOpen) {
@@ -428,6 +594,7 @@ class _AppRootState extends State<_AppRoot> {
     if (_broadcastScreenOpen) return;
 
     final nav = navigatorKey.currentState;
+
     if (nav == null) return;
 
     _broadcastScreenOpen = true;
@@ -443,7 +610,8 @@ class _AppRootState extends State<_AppRoot> {
 
   @override
   Widget build(BuildContext context) {
-    final themeMode = context.watch<ThemeProvider>().themeMode;
+    final themeMode =
+        context.watch<ThemeProvider>().themeMode;
 
     return MaterialApp(
       title: AppConstants.appName,
@@ -463,7 +631,9 @@ class _AppRootState extends State<_AppRoot> {
         GlobalCupertinoLocalizations.delegate,
       ],
       builder: (context, child) {
-        return _AppGates(child: child ?? const SizedBox.shrink());
+        return _AppGates(
+          child: child ?? const SizedBox.shrink(),
+        );
       },
       home: const SplashScreen(),
     );
@@ -473,18 +643,15 @@ class _AppRootState extends State<_AppRoot> {
 class _AppGates extends StatefulWidget {
   final Widget child;
 
-  const _AppGates({required this.child});
+  const _AppGates({
+    required this.child,
+  });
 
   @override
   State<_AppGates> createState() => _AppGatesState();
 }
 
 class _AppGatesState extends State<_AppGates> {
-  @override
-  void initState() {
-    super.initState();
-  }
-
   @override
   Widget build(BuildContext context) {
     final activation = context.watch<ActivationService>();
@@ -497,7 +664,8 @@ class _AppGatesState extends State<_AppGates> {
       return const ActivationScreen();
     }
 
-    // ✅ شاشة الأذونات لا تزال معطلة مؤقتاً
+    // شاشة إعداد الأذونات معطلة مؤقتاً كما كانت في الملف الأصلي.
+
     /*
     if (_setupCompleted == null) {
       return const _LoadingGate();
@@ -507,22 +675,30 @@ class _AppGatesState extends State<_AppGates> {
       return PermissionSetupScreen(
         onComplete: () async {
           final prefs = await SharedPreferences.getInstance();
+
           await prefs.setBool(
             AppConstants.keyPermissionSetupCompleted,
             true,
           );
-          if (mounted) setState(() => _setupCompleted = true);
+
+          if (mounted) {
+            setState(() => _setupCompleted = true);
+          }
         },
       );
     }
     */
 
-    final locked = context.select<LockService, bool>((s) => s.isLocked);
-    final inCall = context.select<RtcService, bool>((r) => r.isInCall);
+    final locked =
+        context.select<LockService, bool>((s) => s.isLocked);
+
+    final inCall =
+        context.select<RtcService, bool>((r) => r.isInCall);
 
     return Stack(
       children: [
         widget.child,
+
         if (locked && !inCall)
           const Positioned.fill(
             child: LockScreen(),
@@ -551,7 +727,10 @@ class _LoadingGate extends StatelessWidget {
             SizedBox(height: 20),
             Text(
               'جارٍ التحقق...',
-              style: TextStyle(color: Colors.white70, fontSize: 14),
+              style: TextStyle(
+                color: Colors.white70,
+                fontSize: 14,
+              ),
             ),
           ],
         ),
